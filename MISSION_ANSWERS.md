@@ -286,6 +286,47 @@ X-XSS-Protection: 1; mode=block
 
 ---
 
+## Part 3: Cloud Deployment
+
+### Deploy Agent Part 6 (`06-lab-complete/`)
+
+- **Platform:** Render (Web Service Docker từ `06-lab-complete/` + Cloud Redis)
+- **Public URL:** `https://k5-l3b-day14-caothanhtung-2a202603982.onrender.com`
+- **Chi tiết & biến môi trường:** xem [DEPLOYMENT.md](DEPLOYMENT.md)
+- **Screenshots:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
+
+**Kết quả kiểm tra thực tế endpoint public:**
+1. `GET /health` → **`200 OK`**: `{"status":"ok","environment":"production"}`
+2. `GET /ready` → **`200 OK`**: `{"status":"ready"}` (đã kết nối thành công tới Cloud Redis)
+3. `POST /ask` không có `X-API-Key` → **`401 Unauthorized`**: `{"detail":"Invalid or missing API key"}`
+4. `POST /ask` có header `X-API-Key: $AGENT_API_KEY` → **`200 OK`** (kiểm tra với biến `$AGENT_API_KEY` trên terminal và chụp ở `screenshots/test.png`, không lưu key thật vào repo)
+
+---
+
+### Exercise 3.2: So sánh `railway.toml` và `render.yaml`
+
+| Tiêu chí | `railway.toml` | `render.yaml` (Blueprint) |
+|---|---|---|
+| **Định dạng & phạm vi** | **TOML** — cấu hình gọn cho **1 service** riêng lẻ (`[build]`, `[deploy]`). | **YAML** — Infrastructure as Code (**IaC**) khai báo được **nhiều service** và add-on (web + Redis + disk) trong cùng 1 file. |
+| **Build & Runtime** | Dùng `builder = "DOCKERFILE"` (hoặc `"NIXPACKS"` tự nhận diện Python) và `dockerfilePath`; chạy lệnh trong Dockerfile `CMD` hoặc `startCommand`. | Khai báo tường minh `type: web`, `runtime: docker` (hoặc `python`), `region`, `plan` (`free`/`starter`...), `autoDeploy`, `buildCommand`/`startCommand`. |
+| **Biến môi trường & Secrets** | Không khai báo secret trong file; đặt qua Railway Dashboard hoặc CLI (`railway variables set ...`). | Hỗ trợ mục `envVars:` trực tiếp trong YAML; secret dùng `generateValue: true` (tự sinh random) hoặc `sync: false` (nhập tay trên dashboard, không lộ vào Git). |
+| **Health check & Restart** | `healthcheckPath = "/health"`, `healthcheckTimeout`, `restartPolicyType = "ON_FAILURE"`, `restartPolicyMaxRetries`. | `healthCheckPath: /health` trên service web; nền tảng tự quản lý health check & auto-deploy theo branch. |
+| **Dịch vụ phụ thuộc (Redis)** | Tạo Redis riêng trên Railway Dashboard/CLI rồi gán biến `REDIS_URL` cho service agent. | Có thể khai báo trực tiếp block `- type: redis` (`plan`, `maxmemoryPolicy`) ngay trong `render.yaml`. |
+
+**Vì sao hai file khác nhau?**  
+Railway hướng tới trải nghiệm **CLI-first / deploy nhanh theo từng service** (ưu tiên thao tác nhanh qua `railway up` + `railway variables`), nên `railway.toml` chỉ giữ các tham số build/deploy tối giản. Ngược lại, Render thiết kế `render.yaml` theo hướng **GitOps / Blueprint (IaC)** để mô tả toàn bộ hạ tầng (web service, Redis, env var, plan, region) thành một bản thiết kế đồng bộ từ Git.
+
+---
+
+### Exercise 3.3: Pipeline CI/CD GCP Cloud Run (`cloudbuild.yaml` & `service.yaml`)
+
+- **Trigger & Test (`cloudbuild.yaml` bước `test`):** Khi push lên nhánh `main`, Cloud Build chạy container `python:3.11-slim`, cài dependencies và chạy `pytest tests/ -v` để chặn build nếu test fail.
+- **Build & Push Docker image (bước `build` → `push`):** Dùng `gcr.io/cloud-builders/docker` build image với `--cache-from` (`:latest`), gắn 2 tag `:$COMMIT_SHA` và `:latest`, rồi push lên Container Registry (`gcr.io/$PROJECT_ID/ai-agent`).
+- **Deploy lên Cloud Run (bước `deploy`):** Chạy `gcloud run deploy` triển khai image `:$COMMIT_SHA` tại region `asia-southeast1` với `--min-instances=1` (tránh cold start), `--max-instances=10`, `512Mi` RAM / `1` CPU, timeout `60s` và inject secret an toàn từ **Secret Manager** (`--set-secrets`).
+- **Định nghĩa hạ tầng IaC (`service.yaml`):** File Knative (`serving.knative.dev/v1`) mô tả cấu hình chuẩn của service Cloud Run gồm autoscaling (`minScale: "1"`, `maxScale: "10"`, `containerConcurrency: 80`), tham chiếu secret qua `secretKeyRef`, cùng `livenessProbe` (`/health`) và `startupProbe` (`/ready`).
+
+---
+
 ## Part 4: API Security
 
 ### Exercise 4.1: API Key Authentication (`04-api-gateway/develop/app.py`)
@@ -672,3 +713,6 @@ X-Served-By: 172.20.0.3:8000
 | 2026-11-26 | CP3 | Đọc và phân tích cơ chế API Key (`04-api-gateway/develop/app.py`), JWT (`auth.py`), Rate Limit (`rate_limiter.py`) và Cost Guard (`cost_guard.py`). | Tự cài `pyjwt`, chạy bản `develop` test các mã 401/403/200; chạy bản `production` lấy JWT của `student`/`demo123`, lặp 12 request ghi nhận 1–10 trả 200 và 11–12 trả 429, kiểm tra `/me/usage` và che token trước khi lưu vào `MISSION_ANSWERS.md`. |
 | 2026-11-26 | CP4 | Phân tích `05-scaling-reliability/develop/app.py`, `production/app.py`, `docker-compose.yml`, `nginx.conf` về health/readiness, graceful shutdown và stateless Redis. | Tự chạy bản `develop` kiểm tra `/health`, `/ready`, `/ask`; chạy stack 3 instance với `-p k5-day14-scaling`, chạy `test_stateless.py` xác nhận 5 request chia qua cả 3 instance với 10 messages trong Redis, thử `docker stop` 1 instance và dọn stack bằng `down -v`. |
 | 2026-11-26 | CP5 (Part 6) | Thiết kế và cài đặt các module trong `06-lab-complete/` (`config.py`, `redis_client.py`, `auth.py`, `rate_limiter.py`, `cost_guard.py`, `main.py`, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`). | Cài WSL2 (`Ubuntu` trên `D:\wsl\Ubuntu`), bật tích hợp Docker Desktop, cài `06-lab-complete/requirements.txt` và tự chạy `python3 check_production_ready.py` đạt **`PASS 12/12` (43/43 checks passed)**, image 297 MB, `docker stop` 0.9s với exit code 0; dán output thật vào `MISSION_ANSWERS.md`. |
+| 2026-11-26 | CP6 (Part 3) | Đọc và phân tích `railway.toml`, `render.yaml`, `cloudbuild.yaml`, `service.yaml`; hoàn thiện `DEPLOYMENT.md` và kiểm tra URL Render public. | Đối chiếu trực tiếp từng trường trong file gốc (`03-cloud-deployment/` và `06-lab-complete/`) cho Exercise 3.2 & 3.3; deploy agent Part 6 lên Render (`https://k5-l3b-day14-caothanhtung-2a202603982.onrender.com`), tự test `/health` (200), `/ready` (200), `/ask` không key (401) và chạy `check_production_ready.py --static-only --public-url ...`. |
+| 2026-11-26 | CP7 (Part 7 Bước 1) | Thêm Histogram `agent_question_length_chars` vào `develop/app.py`, bổ sung 2 entry `KNOWLEDGE_BASE` trong `mock_llm.py` và viết workflow CI `.github/workflows/eval.yml`. | Tự chạy `load_test.py` ở 4 mức concurrency (`1, 10, 50, 100`) và 3 mức `MOCK_SLOW_RATE` (`0, 0.03, 0.1`), chạy `eval/run_eval.py` v1 (4.3%) vs v2 (91.3%) vs v2 sau sửa KB (**23/23 — 100.0%**, 0 regression, exit code 0), xuất đủ 10 file JSON vào `reports/` và điền Mục 1–3 trong `BENCHMARK_REPORT.md` khớp số liệu JSON. |
+| 2026-11-26 | CP8 (Part 7 Bước 2) | Chạy full stack Docker Compose (`-p k5-day14-observability`), sửa lỗi thiếu `ENV PYTHONUSERBASE=/home/agent/.local` trong `production/Dockerfile`, phân tích Grafana, Jaeger trace và Prometheus alerts. | Chạy `promtool test rules` (`SUCCESS`), Locust headless 2 phút cho `scale=1` và `scale=3` (`benchmark-results/scale_1_stats.csv`, `scale_3_stats.csv`), truy vấn Prometheus API & Jaeger `/api/v3/traces` + log JSON khớp `trace_id`, kích hoạt đồng thời 3 alert firing (`AgentInstanceDown` +45s, `AgentHighErrorRate` +107s, `AgentHighLatencyP95` +147s), chụp đủ 4 ảnh Part 7, hoàn thiện Mục 4–6 của `BENCHMARK_REPORT.md` và chạy `docker compose down -v` dọn sạch. |
